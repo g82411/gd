@@ -1,0 +1,6 @@
+*.csv
+*.profile
+*.py
+*.json
+*.ipynb
+.idea
