@@ -14,15 +14,15 @@ type ListTask struct {
 	Depth    int
 	Prefix   string
 	Retry    int
+	Query    string
 }
 
 const (
 	poolSize               = 15
 	chanSize               = int(1e5)
-	outputChanSize         = int(1e4)
 	maxRetry               = 3
-	maxCheck               = 5
-	checkFrequencyInSecond = 5
+	maxCheck               = 2
+	checkFrequencyInSecond = 3
 )
 
 func NewListCommand() *cli.Command {
@@ -30,42 +30,37 @@ func NewListCommand() *cli.Command {
 		Name:  "ls",
 		Usage: "List files and folder in from some folder in google drive",
 		Flags: []cli.Flag{
-			&cli.BoolFlag{
-				Name:    "recursive",
-				Aliases: []string{"r"},
-				Usage:   "List files and folder recursively",
-			},
 			&cli.IntFlag{
 				Name:        "depth",
 				Aliases:     []string{"d"},
 				Usage:       "Depth of recursive",
 				DefaultText: "15",
+				Value:       15,
 			},
 		},
 		Action: func(c *cli.Context) error {
 			if !c.Args().Present() {
 				log.Fatalf("Insuffient command")
 			}
-			folderId := c.Args().First()
+			folderName := c.Args().First()
 			return List{
-				FolderId:  folderId,
-				Recursive: c.Bool("recursive"),
-				Depth:     c.Int("depth"),
+				FolderName: folderName,
+				Recursive:  c.Bool("recursive"),
+				Depth:      c.Int("depth"),
 			}.Run(c)
 		},
 	}
 }
 
 type List struct {
-	Fields    string
-	FolderId  string
-	Recursive bool
-	Depth     int
-	Output    string
+	Fields     string
+	FolderName string
+	Recursive  bool
+	Depth      int
+	Output     string
 }
 
 func (l List) Run(c *cli.Context) error {
-	folderId := c.Args().First()
 	tasks := make(chan ListTask, chanSize)
 	srv, err := googleDrive.GetService(c.Context)
 	if err != nil {
@@ -83,14 +78,16 @@ func (l List) Run(c *cli.Context) error {
 				if !ok {
 					return
 				}
-				query := "trashed = false"
-				if task.FolderID != "" {
-					query = fmt.Sprintf("'%s' in parents and trashed = false", task.FolderID)
-				}
+				query := task.Query
 				err := googleDrive.QueryFiles(c.Context, srv, query, func(files []*googleDrive.File) error {
 					for _, file := range files {
-						if file.IsFolder && l.Recursive && task.Depth < l.Depth {
-							tasks <- ListTask{FolderID: file.ID, Depth: task.Depth + 1, Prefix: task.Prefix + file.Name + "/"}
+						if file.IsFolder && task.Depth < l.Depth {
+							tasks <- ListTask{
+								FolderID: file.ID,
+								Depth:    task.Depth + 1,
+								Prefix:   task.Prefix + file.Name + "/",
+								Query:    fmt.Sprintf("'%s' in parents and trashed = false", file.ID),
+							}
 						}
 						fullPath := task.Prefix + file.Name
 						log.Printf("%s, %4s, %s", fullPath, file.ReadableSize, file.Link)
@@ -115,10 +112,10 @@ func (l List) Run(c *cli.Context) error {
 		}
 	}
 	tasks <- ListTask{
-		FolderID: folderId,
-		Depth:    0,
-		Prefix:   "/",
-		Retry:    0,
+		Query:  fmt.Sprintf("name = '%s'", l.FolderName),
+		Depth:  0,
+		Prefix: "",
+		Retry:  0,
 	}
 	for i := 0; i < poolSize; i++ {
 		wg.Add(1)
